@@ -1,0 +1,135 @@
+library(ggplot2)
+library(dplyr)
+
+# Load first dataset
+combinedresults1 = paste0("/Users/nagrodzkij/cam/IMT/MS/lipidomics/extended/severity/results/","__new_severity_combined_with_categories",".csv")
+df1 <- read.csv(combinedresults1)
+
+# Load second dataset
+combinedresults2 = paste0("/Users/nagrodzkij/cam/IMT/MS/lipidomics/extended/risk/results/","__new_risk_combined_with_categories",".csv")
+df2 <- read.csv(combinedresults2)
+
+# Convert category to factor for grouping
+category_levels <- df1 %>%
+  group_by(category) %>%
+  summarise(min_pval = min(pval.method1, na.rm = TRUE)) %>%
+  arrange(min_pval) %>%
+  pull(category)
+
+df1$category <- factor(df1$category, levels = category_levels)
+df2$category <- factor(df2$category, levels = category_levels)
+
+# Compute -log10 of p-values
+df1$log_pval <- -log10(df1$pval.method1)
+df2$log_pval <- -log10(df2$pval.method1)
+
+# Bonferroni threshold lines
+bonferroni_full <- -log10(0.05 / 249)
+bonferroni_meff <- -log10(0.05 / 33)
+
+# Define category abbreviations dynamically based on correct order
+abbreviation_lookup <- c('Triglycerides' = 'TG', 
+                         'Lipoprotein subclasses' = 'LP',
+                         'Relative lipoprotein lipid concentrations' = 'LP-RC',
+                         'Fatty acids' = 'FA',
+                         'Fluid balance' = 'FB',
+                         'Amino acids' = 'AA',
+                         'Total lipids' = 'L',
+                         'Lipoprotein particle sizes' = 'LP-S',
+                         'Lipoprotein particle concentrations' = 'LP-C',
+                         'Other lipids' = 'L-O',
+                         'Phospholipids' = 'PL',
+                         'Apolipoproteins' = 'Apo',
+                         'Ketone bodies' = 'Keto',
+                         'Free cholesterol' = 'CH-F',
+                         'Glycolysis related metabolites' = 'Glyco',
+                         'Inflammation' = 'I',
+                         'Cholesterol' = 'CH',
+                         'Cholesteryl esters' = 'CH-E')
+
+category_abbreviations <- setNames(abbreviation_lookup[category_levels], category_levels)
+
+# Ensure each category has a fixed width and is centered
+category_width <- 100  # Fixed width for each category
+format_data <- function(df) {
+  df %>%
+    arrange(category, log_pval) %>%
+    group_by(category) %>%
+    mutate(exposure_index = row_number(),  # Ensure this column exists
+           category_center = (max(exposure_index) + 1) / 2,  # Centering within category
+           category_position = as.numeric(factor(category, levels = category_levels)) * category_width) %>%
+    ungroup()
+}
+
+df1 <- format_data(df1)
+df2 <- format_data(df2)
+
+# Use consistent category colors
+category_colors <- setNames(rainbow(length(category_levels)), category_levels)
+
+# Store category order and colors for reuse
+category_color_assignment <- data.frame(Category = category_levels, Color = category_colors)
+
+# Identify top exposures for labeling
+highlighted_exposures1 <- df1 %>% 
+  arrange(pval.method1) %>% 
+  slice_head(n = 3) %>%
+  mutate(clean_exposure = gsub("_", " ", substr(exposure, 14, nchar(exposure))))
+
+highlighted_exposures2 <- df2 %>% 
+  arrange(pval.method1) %>% 
+  slice_head(n = 1) %>%
+  mutate(clean_exposure = gsub("_", " ", substr(exposure, 14, nchar(exposure))))
+
+# Function to generate Manhattan plot
+generate_manhattan_plot <- function(df, plot_path, title, highlighted_exposures) {
+  ggplot(df, aes(x = exposure_index - category_center + category_position, y = log_pval, fill = category)) +
+    geom_point(shape = 21, color = "black", size = 3, stroke = 0.5, alpha = 0.8) +  # Black border with color inside
+    geom_hline(yintercept = bonferroni_full, linetype = "dashed", color = "blue") +
+    geom_hline(yintercept = bonferroni_meff, linetype = "dashed", color = "red") +
+    annotate("text", x = max(df$category_position, na.rm = TRUE) - 50, y = bonferroni_full + 0.1, label = "α Bonf = 2e-4", 
+             color = "blue", hjust = 1, size = 5) +
+    annotate("text", x = max(df$category_position, na.rm = TRUE) - 50, y = bonferroni_meff + 0.1, label = "α Meff = 1.5e-3", 
+             color = "red", hjust = 1, size = 5) +
+    geom_vline(xintercept = unique(df$category_position) - category_width / 2, 
+               linetype = "dotted", color = "gray50") +  # Separate categories
+    scale_x_continuous(labels = category_abbreviations[category_levels], 
+                       breaks = unique(df$category_position)) +  # Use dynamically generated abbreviations
+    scale_fill_manual(values = category_colors, 
+                      labels = paste0(category_abbreviations[category_levels], " - ", category_levels), 
+                      guide = guide_legend(title = "Category Abbreviations")) +  # Ensure legend is displayed
+    geom_segment(data = highlighted_exposures, aes(x = exposure_index - category_center + category_position, 
+                                                   xend = exposure_index - category_center + category_position + 50, 
+                                                   y = log_pval, yend = log_pval + 0.5), 
+                 color = "black") +
+    geom_text(data = highlighted_exposures, aes(x = exposure_index - category_center + category_position + 55, 
+                                                y = log_pval + 0.5, label = clean_exposure), 
+              hjust = 0, size = 4, color = "black") +
+    labs(x = "Exposure categories", 
+         y = "-log(p) (uncorrected)", 
+         title = title, 
+         fill = "Category Abbreviations") +
+    theme_minimal(base_size = 14) + 
+    theme(
+      legend.position = "right",  # Move legend outside the graph area
+      legend.justification = "center",
+      legend.background = element_rect(fill = "white", color = "black"),
+      panel.background = element_rect(fill = "white", color = "white"),  # White background
+      plot.background = element_rect(fill = "white", color = "white"),   # White plot area
+      panel.grid.major = element_line(color = "gray85", linetype = "dotted"),  # Light gray gridlines
+      panel.grid.minor = element_blank(),
+      axis.ticks.x = element_blank(),  # Remove x-axis ticks
+      axis.text.x = element_text(size = 12, face = "bold"),  # Make x-axis labels more readable
+      plot.margin = margin(20, 100, 20, 10))  # Increase right margin to accommodate legend outside the plot
+  
+  ggsave(plot_path, width = 16, height = 6, dpi = 300, bg = "white")
+}
+
+# Generate first Manhattan plot
+plot_path1 = "/Users/nagrodzkij/cam/IMT/MS/lipidomics/extended/severity/results/Manhattan_plot1.png"
+generate_manhattan_plot(df1, plot_path1, "Manhattan-style Plot of Exposures - Dataset 1", highlighted_exposures1)
+
+# Generate second Manhattan plot with the same order and colors
+plot_path2 = "/Users/nagrodzkij/cam/IMT/MS/lipidomics/extended/severity/results/Manhattan_plot2.png"
+generate_manhattan_plot(df2, plot_path2, "Manhattan-style Plot of Exposures - Dataset 2", highlighted_exposures2)
+
